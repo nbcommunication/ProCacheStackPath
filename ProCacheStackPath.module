@@ -1,1 +1,295 @@
+<?php namespace ProcessWire;
 
+/**
+ * Purge the StackPath cache
+ *
+ * #pw-summary Purge the StackPath cache when ProCache clears.
+ *
+ * @copyright 2023 NB Communication Ltd
+ * @license Mozilla Public License v2.0 http://mozilla.org/MPL/2.0/
+ *
+ * @property string $clientId
+ * @property string $clientSecret
+ * @property string $stackId
+ *
+ */
+
+class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
+
+	/**
+	 * getModuleInfo is a module required by all modules to tell ProcessWire about them
+	 *
+	 * @return array
+	 *
+	 */
+	public static function getModuleInfo() {
+		return [
+			'title' => 'Purge the StackPath cache',
+			'version' => 001,
+			'summary' => 'Purge the StackPath cache when ProCache clears.',
+			'author' => 'nbcommunication',
+			'href' => 'https://github.com/nbcommunication/ProCacheStackPath',
+			'singular' => true,
+			'autoload' => true,
+			'icon' => 'angle-double-right',
+			'requires' => 'ProcessWire>=3.0.210,PHP>=8.1.0',
+		];
+	}
+
+	const DELIMITER = '||';
+	const WILDCARD = '*';
+
+	/**
+	 * The urls to clear
+	 *
+	 * @var string
+	 *
+	 */
+	protected $items = '';
+
+	/**
+	 * Initialize the module
+	 *
+	 */
+	public function init() {
+
+	}
+
+	/**
+	 * When ready
+	 *
+	 */
+	public function ready() {
+
+		// Clear the cache if A, C or F
+		$this->addHookAfter('ProCacheStaticBehaviors::executeCacheClearBehaviors', function(HookEvent $event) {
+			$cleared = $event->return;
+			$page = $event->arguments('page');
+			if($cleared['children'] ?? 0) {
+				$this->addUrl($page->url);
+			} else if($cleared['family'] ?? 0) {
+				$this->addUrl($page->parent->url);
+			} else if($cleared['site'] ?? 0) {
+				$this->addUrl();
+			}
+		});
+
+		// All hooks
+		$this->addHook('ProCache::clearAll', function(HookEvent $event) {
+			$this->addUrl();
+		});
+
+		// Page hooks
+		$this->addHook('ProCacheStaticClear::clearedPage', function(HookEvent $event) {
+			$this->addUrl($event->arguments('page')->url, false);
+		});
+
+		// When finished purge urls that have been cleared
+		$this->addHookAfter('ProcessPageView::finished', function(HookEvent $event) {
+
+			$delimiter = self::DELIMITER;
+			$wildcard = self::WILDCARD;
+
+			if($this->items && substr($this->items, strlen($delimiter) * -1) === $delimiter) {
+				$items = array_unique(explode($delimiter, rtrim($this->items, $delimiter)));
+				if(count($items)) {
+
+					$accessToken = $this->getToken();
+					$stackId = $this->stackId;
+
+					if($accessToken && $stackId) {
+
+						$wildcards = [];
+						foreach($items as $index => $url) {
+							$end = substr($url, -1);
+							if($end !== $wildcard && in_array("$url$wildcard", $items)) {
+								// Remove duplicate non-recursive URLs
+								// e.g. remove /url if /url* exists
+								unset($items[$index]);
+							} else if($end === $wildcard) {
+								// Add to wildcards for our next filter
+								$wildcards[$url] = rtrim($url, $wildcard);
+							}
+						}
+
+						foreach($items as $index => $url) {
+							foreach($wildcards as $key => $parent) {
+								// Remove child URLs of recursive parents
+								// e.g. remove /parent/child if /parent* exists
+								$len = strlen($parent);
+								if($url !== $key && strlen($url) > $len && substr($url, 0, $len) === $parent) {
+									unset($items[$index]);
+								}
+							}
+						}
+
+						$this->apiRequest(
+							"/cdn/v1/stacks/{$stackId}/purge",
+							[
+								'items' => array_values(array_map(function($url) {
+
+									$item = [];
+									$recursive = substr($url, -1) === '*';
+									if($recursive) {
+										$item['recursive'] = $recursive;
+									}
+
+									$item['url'] = $recursive ? rtrim($url, '*') : $url;
+
+									return $item;
+
+								}, $items)),
+							],
+							$accessToken
+						);
+					}
+				}
+			}
+		});
+	}
+
+	/**
+	 * Add url
+	 *
+	 * @param string $url
+	 * @param bool $recursive
+	 *
+	 */
+	protected function addUrl($url = '/', $recursive = true) {
+		$this->items .= $url . ($recursive ? self::WILDCARD : '') . self::DELIMITER;
+	}
+
+	/**
+	 * Get the StackPath stacks
+	 *
+	 * @param string $accessToken
+	 * @return array
+	 *
+	 */
+	protected function getStacks($accessToken = null) {
+		return $this->wire()->cache->getFor($this, 'stacks', 'hourly', function() use ($accessToken) {
+			$stacks = [];
+			if(is_null($accessToken)) $accessToken = $this->getToken();
+			if($accessToken) {
+				foreach($this->apiRequest(
+					'stack/v1/stacks',
+					[],
+					$accessToken,
+					'get'
+				)['results'] ?? [] as $stack) {
+					$stacks[$stack['id']] = $stack['name'];
+				}
+			}
+			return $stacks;
+		});
+	}
+
+	/**
+	 * Get the StackPath API access token
+	 *
+	 * @return string
+	 *
+	 */
+	protected function getToken() {
+		return $this->wire()->cache->getFor($this, 'access_token', 'hourly', function() {
+			$clientId = $this->clientId;
+			$clientSecret = $this->clientSecret;
+			return $clientId && $clientSecret ? (
+				$this->apiRequest(
+					'identity/v1/oauth2/token',
+					[
+						'client_id' => $clientId,
+						'client_secret' => $clientSecret,
+						'grant_type' => 'client_credentials',
+					]
+				)['access_token'] ?? false
+			) :
+			false;
+		});
+	}
+
+	/**
+	 * StackPath API
+	 *
+	 * @param string $endpoint
+	 * @param array $data
+	 * @param string $accesToken
+	 * @param string $method
+	 * @return array
+	 *
+	 */
+	protected function apiRequest($endpoint, $data = [], $accesToken = '', $method = 'post') {
+
+		$http = $this->wire(new WireHttp);
+
+		$http->setHeaders(array_merge([
+			'Accept' => 'application/json',
+			'Content-Type' => 'application/json',
+		], $accesToken ? ['Authorization' => "Bearer $accesToken"] : []));
+
+		return json_decode($http->$method(
+			"https://gateway.stackpath.com/$endpoint",
+			$method === 'post' ? json_encode($data) : []
+		), 1);
+	}
+
+	/**
+	 * Module configuration
+	 *
+	 * @param InputfieldWrapper $inputfields
+	 *
+	 */
+	public function getModuleConfigInputfields(InputfieldWrapper $inputfields) {
+
+		$input = $this->wire()->input;
+		$modules = $this->wire()->modules;
+
+		if($input->post('clientId') && $input->post('clientSecret')) {
+			// Get the bearer token and stacks if not already present
+			$accessToken = $this->getToken();
+			if($accessToken) {
+				$stacks = $this->getStacks($accessToken);
+			}
+		}
+
+		$inputfields->add([
+			'type' => 'text',
+			'name' => 'clientId',
+			'value' => $this->clientId,
+			'label' => $this->_('Client ID'),
+			'columnWidth' => 50,
+		]);
+
+		$inputfields->add([
+			'type' => 'text',
+			'name' => 'clientSecret',
+			'value' => $this->clientSecret,
+			'label' => $this->_('Client Secret'),
+			'attr' => [
+				'type' => 'password',
+			],
+			'columnWidth' => 50,
+		]);
+
+		if($this->clientId && $this->clientSecret) {
+
+			$accessToken = $this->getToken();
+			if($accessToken) {
+
+				$stacks = $this->getStacks($accessToken);
+				if(count($stacks)) {
+
+					$inputfields->add([
+						'type' => 'select',
+						'name' => 'stackId',
+						'value' => $this->stackId,
+						'label' => $this->_('Stack'),
+						'options' => $stacks,
+					]);
+				}
+			}
+		}
+
+		return $inputfields;
+	}
+}
