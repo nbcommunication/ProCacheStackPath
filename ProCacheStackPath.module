@@ -3,7 +3,7 @@
 /**
  * Purge the StackPath cache
  *
- * #pw-summary Purge the StackPath cache when ProCache clears.
+ * #pw-summary Purge the StackPath CDN cache when ProCache clears.
  *
  * @copyright 2023 NB Communication Ltd
  * @license Mozilla Public License v2.0 http://mozilla.org/MPL/2.0/
@@ -11,6 +11,9 @@
  * @property string $clientId
  * @property string $clientSecret
  * @property string $stackId
+ *
+ * @property string $items
+ * @property string $httpUrl
  *
  */
 
@@ -26,13 +29,13 @@ class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
 		return [
 			'title' => 'Purge the StackPath cache',
 			'version' => 001,
-			'summary' => 'Purge the StackPath cache when ProCache clears.',
+			'summary' => 'Purge the StackPath CDN cache when ProCache clears.',
 			'author' => 'nbcommunication',
 			'href' => 'https://github.com/nbcommunication/ProCacheStackPath',
 			'singular' => true,
 			'autoload' => true,
 			'icon' => 'angle-double-right',
-			'requires' => 'ProcessWire>=3.0.210,PHP>=8.1.0',
+			'requires' => 'ProcessWire>=3.0.210,ProCache>=4.0.3,PHP>=8.1.0',
 		];
 	}
 
@@ -48,11 +51,19 @@ class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
 	protected $items = '';
 
 	/**
+	 * The homepage httpUrl
+	 *
+	 * @var string
+	 *
+	 */
+	protected $httpUrl = '';
+
+	/**
 	 * Initialize the module
 	 *
 	 */
 	public function init() {
-
+		$this->httpUrl = $this->wire()->pages->get(1)->httpUrl;
 	}
 
 	/**
@@ -66,9 +77,9 @@ class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
 			$cleared = $event->return;
 			$page = $event->arguments('page');
 			if($cleared['children'] ?? 0) {
-				$this->addUrl($page->url);
+				$this->addUrl($page->httpUrl);
 			} else if($cleared['family'] ?? 0) {
-				$this->addUrl($page->parent->url);
+				$this->addUrl($page->parent->httpUrl);
 			} else if($cleared['site'] ?? 0) {
 				$this->addUrl();
 			}
@@ -81,7 +92,7 @@ class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
 
 		// Page hooks
 		$this->addHook('ProCacheStaticClear::clearedPage', function(HookEvent $event) {
-			$this->addUrl($event->arguments('page')->url, false);
+			$this->addUrl($event->arguments('page')->httpUrl, false);
 		});
 
 		// When finished purge urls that have been cleared
@@ -155,8 +166,8 @@ class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
 	 * @param bool $recursive
 	 *
 	 */
-	protected function addUrl($url = '/', $recursive = true) {
-		$this->items .= $url . ($recursive ? self::WILDCARD : '') . self::DELIMITER;
+	protected function addUrl($url = '', $recursive = true) {
+		$this->items .= ($url ?: $this->httpUrl) . ($recursive ? self::WILDCARD : '') . self::DELIMITER;
 	}
 
 	/**
@@ -257,6 +268,7 @@ class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
 			'name' => 'clientId',
 			'value' => $this->clientId,
 			'label' => $this->_('Client ID'),
+			'icon' => 'star',
 			'columnWidth' => 50,
 		]);
 
@@ -264,7 +276,8 @@ class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
 			'type' => 'text',
 			'name' => 'clientSecret',
 			'value' => $this->clientSecret,
-			'label' => $this->_('Client Secret'),
+			'label' => $this->_('API Client Secret'),
+			'icon' => 'key',
 			'attr' => [
 				'type' => 'password',
 			],
@@ -285,6 +298,7 @@ class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
 						'value' => $this->stackId,
 						'label' => $this->_('Stack'),
 						'options' => $stacks,
+						'icon' => 'database',
 					]);
 				}
 			}
