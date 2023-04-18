@@ -28,7 +28,7 @@ class ProCacheStackPath extends WireData implements Module, ConfigurableModule {
 	public static function getModuleInfo() {
 		return [
 			'title' => 'Purge the StackPath cache',
-			'version' => 001,
+			'version' => 1,
 			'summary' => 'Purge the StackPath CDN cache when ProCache clears.',
 			'author' => 'nbcommunication',
 			'href' => 'https://github.com/nbcommunication/ProCacheStackPath',
